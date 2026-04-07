@@ -3,9 +3,9 @@ import gzip
 import ast
 from typing import Dict, Tuple, Iterable, Any
 
-INPUT_CSV = "/root/autodl-tmp/Amazon_Toys/Amazon_Toys.csv"
-METADATA_PATH = "/root/autodl-tmp/Amazon_Toys/Amazon_Toys.json"
-OUTPUT_CSV = "/root/autodl-tmp/Amazon_Toys/Amazon_Toys_filled.csv"
+INPUT_CSV = "/root/autodl-tmp/Beauty_5/Beauty_5.csv"
+METADATA_PATH = "/root/autodl-tmp/Amazon_Beauty/meta_Beauty.json"
+OUTPUT_CSV = "/root/autodl-tmp/Beauty_5/Beauty_5_filled.csv"
 
 CSV_ITEM_ID_FIELD = "item_id"
 META_ID_FIELD = "asin"

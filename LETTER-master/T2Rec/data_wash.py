@@ -17,6 +17,6 @@ def parse_review(input_path, output_path):
     df.to_csv(output_path, index=False)
 
 parse_review(
-    input_path="/root/autodl-tmp/Amazon_Toys/Amazon_Toys_review.json",
-    output_path="/root/autodl-tmp/Amazon_Toys/Amazon_Toys.csv"
+    input_path="/root/autodl-tmp/Beauty_5/Beauty_5.json",
+    output_path="/root/autodl-tmp/Beauty_5/Beauty_5.csv"
 )
