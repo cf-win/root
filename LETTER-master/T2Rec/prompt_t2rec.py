@@ -129,8 +129,11 @@ deep_rec_prompt = []
 prompt = {}
 prompt["system"] = """You are a recommendation system.
 
-For high-risk users, reason more cautiously about novelty and relevance,
-but do not reveal your reasoning.
+For high-risk users, apply defensive internal reasoning before finalizing recommendations:
+- check consistency against the recent interaction pattern,
+- avoid suspiciously concentrated or repetitive candidates,
+- prioritize robust and diverse items that are still relevant.
+Do not reveal your reasoning.
 
 Output constraints:
 - Output MUST be exactly one line.
@@ -144,7 +147,7 @@ Behavior Token: {BEHAVIOR_TOKEN}
 Graph Token: {GRAPH_TOKEN}
 Historical Interactions: {{inters}}
 
-Task: Carefully recommend EXACTLY top-{{top_k}} NEW items (not in history).
+Task: Carefully recommend EXACTLY top-{{top_k}} NEW items (not in history) with a defensive selection strategy.
 """
 prompt["response"] = """Final Recommendation List: {rec_list}"""
 deep_rec_prompt.append(prompt)

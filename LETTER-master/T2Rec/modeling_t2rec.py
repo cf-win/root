@@ -66,8 +66,8 @@ class T2Rec(nn.Module):
         self.config = config
         self.base_model = base_model
         self.temperature = 1.0
-        self.lambda_anomaly = 1.0
         self.lambda_risk = 1.0
+        self.risk_pos_weight = None
         llm_dim = config.hidden_size
         self.graph_projector = GraphProjector(graph_dim, llm_dim)
         self.behavior_projector = BehaviorProjector(behavior_dim, llm_dim)
@@ -106,8 +106,11 @@ class T2Rec(nn.Module):
 
     def set_hyper(self, temperature, lambda_anomaly=1.0, lambda_risk=1.0):
         self.temperature = temperature
-        self.lambda_anomaly = lambda_anomaly
+        _ = lambda_anomaly
         self.lambda_risk = lambda_risk
+
+    def set_risk_pos_weight(self, pos_weight: Optional[float] = None):
+        self.risk_pos_weight = pos_weight
 
     def compute_risk_logit(self, graph_tokens, behavior_tokens):
         graph_feat = graph_tokens
@@ -124,7 +127,7 @@ class T2Rec(nn.Module):
     def compute_risk_score(self, graph_tokens, behavior_tokens):
         return torch.sigmoid(self.compute_risk_logit(graph_tokens, behavior_tokens))
 
-    def compute_loss(self, logits, labels, anomaly_mask=None):
+    def compute_loss(self, logits, labels):
         shift_logits = logits[..., :-1, :].contiguous()
         shift_labels = labels[..., 1:].contiguous()
         loss_fct = CrossEntropyLoss(ignore_index=-100)
@@ -132,24 +135,7 @@ class T2Rec(nn.Module):
         shift_logits = shift_logits.view(-1, vocab_size)
         shift_labels = shift_labels.view(-1)
         shift_labels = shift_labels.to(shift_logits.device)
-        
-        if anomaly_mask is not None:
-            shift_anomaly_mask = anomaly_mask[..., 1:].contiguous().view(-1)
-            anomaly_positions = shift_anomaly_mask == 1
-            rec_positions = (shift_labels != -100) & (shift_anomaly_mask != 1)
-            anomaly_loss = torch.tensor(0.0, device=logits.device, dtype=logits.dtype)
-            rec_loss = torch.tensor(0.0, device=logits.device, dtype=logits.dtype)
-            if anomaly_positions.any():
-                anomaly_logits = shift_logits[anomaly_positions]
-                anomaly_labels = shift_labels[anomaly_positions]
-                anomaly_loss = loss_fct(anomaly_logits / self.temperature, anomaly_labels)
-            if rec_positions.any():
-                rec_logits = shift_logits[rec_positions]
-                rec_labels = shift_labels[rec_positions]
-                rec_loss = loss_fct(rec_logits / self.temperature, rec_labels)
-            return self.lambda_anomaly * anomaly_loss + rec_loss
-        else:
-            return loss_fct(shift_logits / self.temperature, shift_labels)
+        return loss_fct(shift_logits / self.temperature, shift_labels)
 
     def forward(
         self,
@@ -165,7 +151,6 @@ class T2Rec(nn.Module):
         return_dict: Optional[bool] = None,
         graph_tokens: Optional[torch.FloatTensor] = None,
         behavior_tokens: Optional[torch.FloatTensor] = None,
-        anomaly_mask: Optional[torch.LongTensor] = None,
         risk_labels: Optional[torch.FloatTensor] = None,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
@@ -208,13 +193,21 @@ class T2Rec(nn.Module):
         loss = None
         risk_logit = None
         if labels is not None:
-            loss = self.compute_loss(logits, labels, anomaly_mask)
+            loss = self.compute_loss(logits, labels)
         if graph_tokens is not None and behavior_tokens is not None:
             risk_logit = self.compute_risk_logit(graph_tokens, behavior_tokens)
             if risk_labels is not None:
+                pos_weight = None
+                if self.risk_pos_weight is not None:
+                    pos_weight = torch.tensor(
+                        [self.risk_pos_weight],
+                        device=risk_logit.device,
+                        dtype=risk_logit.dtype,
+                    )
                 risk_loss = F.binary_cross_entropy_with_logits(
                     risk_logit,
-                    risk_labels.to(device=risk_logit.device, dtype=risk_logit.dtype)
+                    risk_labels.to(device=risk_logit.device, dtype=risk_logit.dtype),
+                    pos_weight=pos_weight,
                 )
                 if loss is None:
                     loss = self.lambda_risk * risk_loss

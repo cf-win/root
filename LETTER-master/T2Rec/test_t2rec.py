@@ -17,6 +17,7 @@ from utils_t2rec import (
     parse_dataset_args,
     set_seed,
     ensure_dir,
+    load_datasets,
     load_test_dataset,
     compute_metrics,
 )
@@ -66,6 +67,61 @@ def sid_to_item_list(text, token_to_item):
         else:
             items.append(sid)  # fallback
     return items
+
+
+def _f1_from_scores(scores, labels, threshold):
+    tp = fp = fn = 0
+    for s, y in zip(scores, labels):
+        p = 1 if s >= threshold else 0
+        if p == 1 and y == 1:
+            tp += 1
+        elif p == 1 and y == 0:
+            fp += 1
+        elif p == 0 and y == 1:
+            fn += 1
+    precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+    recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    return (2 * precision * recall / (precision + recall)) if (precision + recall) > 0 else 0.0
+
+
+def tune_risk_threshold_on_valid(args, model, tokenizer):
+    _, valid_data = load_datasets(args)
+    collator = T2RecTestCollator(args, tokenizer)
+    valid_loader = DataLoader(
+        valid_data,
+        batch_size=args.test_batch_size,
+        shuffle=False,
+        collate_fn=collator,
+        num_workers=4,
+    )
+
+    scores, labels = [], []
+    with torch.no_grad():
+        for batch in tqdm(valid_loader, desc="TuneRiskThreshold(valid)"):
+            graph_dev = next(model.temporal_aggregator.parameters()).device
+            beh_dev = next(model.behavior_projector.parameters()).device
+            graph_tokens = batch["graph_tokens"].to(graph_dev)
+            behavior_tokens = batch["behavior_tokens"].to(beh_dev)
+            risk_logits = model.compute_risk_logit(graph_tokens, behavior_tokens)
+            risk_scores = torch.sigmoid(risk_logits).detach().cpu().tolist()
+            scores.extend(risk_scores)
+            labels.extend([1 if x == "Yes" else 0 for x in batch["anomaly_labels"]])
+
+    if len(scores) == 0:
+        return args.risk_threshold
+
+    best_f1 = -1.0
+    best_th = args.risk_threshold
+    th = args.threshold_min
+    while th <= args.threshold_max + 1e-12:
+        f1 = _f1_from_scores(scores, labels, th)
+        if f1 > best_f1:
+            best_f1 = f1
+            best_th = th
+        th += args.threshold_step
+
+    print(f"[AutoRiskThreshold] selected={best_th:.4f}, best_valid_f1={best_f1:.6f}")
+    return best_th
 
 
 def test(args):
@@ -136,6 +192,9 @@ def test(args):
     behavior_token_id = tokenizer.convert_tokens_to_ids(BEHAVIOR_TOKEN)
     model.set_special_token_ids(graph_token_id, behavior_token_id)
     model.eval()
+    selected_risk_threshold = args.risk_threshold
+    if args.auto_risk_threshold:
+        selected_risk_threshold = tune_risk_threshold_on_valid(args, model, tokenizer)
 
     all_predictions = []     # List[List[str]]，每条样本的预测SID列表
     all_targets = []         # List[List[str]]，每条样本的多目标SID列表
@@ -165,7 +224,7 @@ def test(args):
             route_preds = []
             for i in range(risk_scores.size(0)):
                 score = float(risk_scores[i].item())
-                is_deep = score >= args.risk_threshold
+                is_deep = score >= selected_risk_threshold
                 route_texts.append(deep_input_texts[i] if is_deep else simple_input_texts[i])
                 route_preds.append("Yes" if is_deep else "No")
 
@@ -279,6 +338,7 @@ def test(args):
 
     output_data = {
         "args": vars(args),
+        "selected_risk_threshold": selected_risk_threshold,
         "results": results,
         "predictions": [
             {

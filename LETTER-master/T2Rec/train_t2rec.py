@@ -31,7 +31,6 @@ class T2RecTrainer(transformers.Trainer):
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         graph_tokens = inputs.pop("graph_tokens", None)
         behavior_tokens = inputs.pop("behavior_tokens", None)
-        anomaly_mask = inputs.pop("anomaly_mask", None)
         risk_labels = inputs.pop("risk_labels", None)
         labels = inputs.get("labels")
         outputs = model(
@@ -40,7 +39,6 @@ class T2RecTrainer(transformers.Trainer):
             labels=labels,
             graph_tokens=graph_tokens,
             behavior_tokens=behavior_tokens,
-            anomaly_mask=anomaly_mask,
             risk_labels=risk_labels,
         )
         loss = outputs.loss
@@ -67,6 +65,9 @@ def train(args):
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
     train_data, valid_data = load_datasets(args)
+    pos_num = sum(1 for d in train_data.inter_data if d.get("anomaly_label", "No") == "Yes")
+    neg_num = len(train_data.inter_data) - pos_num
+    risk_pos_weight = (neg_num / pos_num) if pos_num > 0 else None
     new_tokens = train_data.get_new_tokens()
     add_num = tokenizer.add_tokens(new_tokens)
     if local_rank == 0:
@@ -88,6 +89,7 @@ def train(args):
         trust_remote_code=True,
     )
     model.set_hyper(args.temperature, args.lambda_anomaly, args.lambda_risk)
+    model.set_risk_pos_weight(risk_pos_weight)
     model.resize_token_embeddings(len(tokenizer))
     graph_token_id = tokenizer.convert_tokens_to_ids(GRAPH_TOKEN)
     behavior_token_id = tokenizer.convert_tokens_to_ids(BEHAVIOR_TOKEN)
@@ -132,6 +134,8 @@ def train(args):
             if local_rank == 0:
                 print(f"Checkpoint {checkpoint_name} not found")
     if local_rank == 0:
+        if risk_pos_weight is not None:
+            print("risk_pos_weight:", risk_pos_weight)
         model.print_trainable_parameters()
     if not ddp and torch.cuda.device_count() > 1:
         model.is_parallelizable = True

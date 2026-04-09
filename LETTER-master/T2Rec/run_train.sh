@@ -28,8 +28,8 @@ torchrun --nproc_per_node=1 train_t2rec.py \
     --train_data_sample_num 0 \
     --index_file .index.json \
     --temperature 1.0 \
-    --lambda_anomaly 0.005 \
-    --lambda_risk 1.0 \
+    --lambda_anomaly 0.0 \
+    --lambda_risk 2.0 \
     --probe_dim 64 \
     --max_his_len 20 \
     --top_k 10 \

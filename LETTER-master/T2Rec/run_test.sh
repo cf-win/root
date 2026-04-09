@@ -25,6 +25,9 @@ python test_t2rec.py \
     --max_his_len 20 \
     --top_k 10 \
     --sample_num -1 \
-    --risk_threshold 0.5 \
+    --auto_risk_threshold \
+    --threshold_min 0.1 \
+    --threshold_max 0.9 \
+    --threshold_step 0.01 \
     --probe_dim 64 \
     --lora

@@ -29,7 +29,7 @@ def parse_dataset_args(parser):
     parser.add_argument("--graph_token_path", type=str, default="")
     parser.add_argument("--behavior_token_path", type=str, default="")
     parser.add_argument("--task", type=str, default="simple_rec",
-                        help="anomaly_rec, anomaly_only, rec_only, simple_rec, deep_rec")
+                        help="rec_only, simple_rec, deep_rec (anomaly_rec/anomaly_only kept only for compatibility)")
     parser.add_argument("--top_k", type=int, default=10)
     parser.add_argument("--use_title", action="store_true", default=False)
     return parser
@@ -59,7 +59,8 @@ def parse_train_args(parser):
     parser.add_argument("--bf16", action="store_true", default=True)
     parser.add_argument("--deepspeed", type=str, default="./config/ds_z2_bf16.json")
     parser.add_argument("--temperature", type=float, default=1.0)
-    parser.add_argument("--lambda_anomaly", type=float, default=1.0)
+    parser.add_argument("--lambda_anomaly", type=float, default=0.0,
+                        help="deprecated: LLM anomaly text loss is disabled; this flag is kept for compatibility")
     parser.add_argument("--lambda_risk", type=float, default=1.0)
     parser.add_argument("--graph_dim", type=int, default=128)
     parser.add_argument("--behavior_dim", type=int, default=64)
@@ -77,6 +78,10 @@ def parse_test_args(parser):
     parser.add_argument("--gpu_id", type=int, default=0)
     parser.add_argument("--metrics", type=str, default="hit@1,hit@5,hit@10,ndcg@5,ndcg@10")
     parser.add_argument("--risk_threshold", type=float, default=0.5)
+    parser.add_argument("--auto_risk_threshold", action="store_true", default=False)
+    parser.add_argument("--threshold_min", type=float, default=0.05)
+    parser.add_argument("--threshold_max", type=float, default=0.95)
+    parser.add_argument("--threshold_step", type=float, default=0.05)
     parser.add_argument("--probe_dim", type=int, default=64)
     return parser
 
