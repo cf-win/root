@@ -190,10 +190,12 @@ class T2Rec(nn.Module):
             return_dict=return_dict,
         )
         logits = outputs.logits
-        loss = None
+        rec_loss = None
+        risk_loss = None
+        total_loss = None
         risk_logit = None
         if labels is not None:
-            loss = self.compute_loss(logits, labels)
+            rec_loss = self.compute_loss(logits, labels)
         if graph_tokens is not None and behavior_tokens is not None:
             risk_logit = self.compute_risk_logit(graph_tokens, behavior_tokens)
             if risk_labels is not None:
@@ -209,20 +211,26 @@ class T2Rec(nn.Module):
                     risk_labels.to(device=risk_logit.device, dtype=risk_logit.dtype),
                     pos_weight=pos_weight,
                 )
-                if loss is None:
-                    loss = self.lambda_risk * risk_loss
-                else:
-                    loss = loss + self.lambda_risk * risk_loss
+        if rec_loss is not None and risk_loss is not None:
+            total_loss = rec_loss + self.lambda_risk * risk_loss
+        elif rec_loss is not None:
+            total_loss = rec_loss
+        elif risk_loss is not None:
+            total_loss = self.lambda_risk * risk_loss
+
         if not return_dict:
             output = (logits,) + outputs[1:]
-            return (loss,) + output if loss is not None else output
+            return (total_loss,) + output if total_loss is not None else output
         result = CausalLMOutputWithPast(
-            loss=loss,
+            loss=total_loss,
             logits=logits,
             past_key_values=outputs.past_key_values,
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
         )
+        result.rec_loss = rec_loss
+        result.risk_loss = risk_loss
+        result.total_loss = total_loss
         result.risk_logits = risk_logit
         return result
 

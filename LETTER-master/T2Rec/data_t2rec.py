@@ -27,24 +27,18 @@ class AnomalyRecDataset(Dataset):
         self.use_title = getattr(args, "use_title", False)
 
         # task -> prompts
-        # 训练阶段只保留推荐生成目标：若传入 anomaly 任务则自动回退到 rec_only。
-        effective_task = self.task
-        if self.mode == "train" and self.task in {"anomaly_rec", "anomaly_only"}:
-            effective_task = "rec_only"
+        # 训练阶段统一使用 rec_train，推理阶段按传入 task 选择 simple/deep。
+        effective_task = "rec_train" if self.mode == "train" else self.task
 
-        if effective_task == "anomaly_rec":
-            self.prompts = all_prompt["anomaly_rec"]
-        elif effective_task == "anomaly_only":
-            self.prompts = all_prompt["anomaly_only"]
-        elif effective_task == "rec_only":
-            self.prompts = all_prompt["rec_only"]
+        if effective_task in {"rec_train", "rec_only"}:
+            self.prompts = all_prompt["rec_train"]
         elif effective_task == "simple_rec":
             self.prompts = all_prompt["simple_rec"]
         elif effective_task == "deep_rec":
             self.prompts = all_prompt["deep_rec"]
         else:
-            # fallback
-            self.prompts = all_prompt["simple_rec"]
+            # fallback: training keeps rec_train, test/valid keeps simple_rec
+            self.prompts = all_prompt["rec_train"] if self.mode == "train" else all_prompt["simple_rec"]
 
         self.new_tokens = None
         self.graph_tokens = None

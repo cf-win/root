@@ -28,8 +28,8 @@ def parse_dataset_args(parser):
     parser.add_argument("--valid_prompt_sample_num", type=int, default=1)
     parser.add_argument("--graph_token_path", type=str, default="")
     parser.add_argument("--behavior_token_path", type=str, default="")
-    parser.add_argument("--task", type=str, default="simple_rec",
-                        help="rec_only, simple_rec, deep_rec (anomaly_rec/anomaly_only kept only for compatibility)")
+    parser.add_argument("--task", type=str, default="rec_train",
+                        help="rec_train, simple_rec, deep_rec (train always uses rec_train)")
     parser.add_argument("--top_k", type=int, default=10)
     parser.add_argument("--use_title", action="store_true", default=False)
     return parser

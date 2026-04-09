@@ -42,6 +42,29 @@ class T2RecTrainer(transformers.Trainer):
             risk_labels=risk_labels,
         )
         loss = outputs.loss
+        current_step = int(getattr(self.state, "global_step", 0))
+        log_every = int(getattr(self.args, "logging_steps", 0) or 0)
+        should_log = (
+            self.model.training
+            and log_every > 0
+            and current_step > 0
+            and current_step % log_every == 0
+            and getattr(self, "_last_branch_log_step", -1) != current_step
+        )
+        if should_log:
+            log_data = {}
+            rec_loss = getattr(outputs, "rec_loss", None)
+            risk_loss = getattr(outputs, "risk_loss", None)
+            total_loss = getattr(outputs, "total_loss", None)
+            if rec_loss is not None:
+                log_data["rec_loss"] = float(rec_loss.detach().to(torch.float32).item())
+            if risk_loss is not None:
+                log_data["risk_loss"] = float(risk_loss.detach().to(torch.float32).item())
+            if total_loss is not None:
+                log_data["total_loss"] = float(total_loss.detach().to(torch.float32).item())
+            if log_data:
+                self.log(log_data)
+                self._last_branch_log_step = current_step
         return (loss, outputs) if return_outputs else loss
 
 

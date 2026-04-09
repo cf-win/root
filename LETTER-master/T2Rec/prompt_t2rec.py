@@ -1,77 +1,13 @@
 GRAPH_TOKEN = "<graph_token>"
 BEHAVIOR_TOKEN = "<behav_token>"
 
-SYSTEM_PROMPT = """You are a recommendation system with malicious user detection capability.
-
-You MUST follow the output format strictly. Do NOT output any extra text.
-
-Rules:
-- Decide whether the user is malicious: output exactly "Yes" or "No".
-- Recommend exactly top-k items.
-- The recommendation list MUST contain EXACTLY {top_k} items.
-- Items MUST be separated by ", " (comma + space).
-- Each item MUST be an item token (e.g., <a_1><b_2><c_3>) or an item id string.
-- Do NOT recommend any item that appears in Historical Interactions.
-"""
-
-# =============== anomaly_rec (CoT-style but with strict format) ===============
-COT_PROMPT_TEMPLATE = f"""USER_ID: {{user_id}}
-Behavior Token: {BEHAVIOR_TOKEN}
-Graph Token: {GRAPH_TOKEN}
-Historical Interactions: {{inters}}
-
-Task:
-1) Malicious Detection: decide if the user is malicious.
-2) Recommendation: output EXACTLY top-{{top_k}} NEW items (not in history).
-
-Output constraints (VERY IMPORTANT):
-- Output MUST have exactly 2 lines.
-- Line 1 MUST be: Malicious Judgment: Yes/No
-- Line 2 MUST be: Final Recommendation List: item1, item2, ..., item{{top_k}}
-- The list MUST contain EXACTLY {{top_k}} items.
-- Use ", " as the ONLY separator.
-- Do NOT output explanations, reasoning, bullets, numbering, or extra lines.
-"""
-
-COT_RESPONSE_TEMPLATE = """Malicious Judgment: {anomaly_label}
-Final Recommendation List: {rec_list}"""
-
 sft_prompt = (
     "Below is an instruction that describes a task. Write a response that appropriately completes the request."
     "\n\n### System:\n{system}\n\n### Instruction:\n{instruction}\n\n### Response:{response}"
 )
 
-anomaly_rec_prompt = []
-prompt = {}
-prompt["system"] = SYSTEM_PROMPT
-prompt["instruction"] = COT_PROMPT_TEMPLATE
-prompt["response"] = COT_RESPONSE_TEMPLATE
-anomaly_rec_prompt.append(prompt)
-
-# =============== anomaly_only ===============
-anomaly_only_prompt = []
-prompt = {}
-prompt["system"] = """You are a malicious user detector.
-
-You MUST follow the output format strictly. Do NOT output any extra text.
-Output MUST be exactly one word: Yes or No.
-"""
-prompt["instruction"] = f"""USER_ID: {{user_id}}
-Behavior Token: {BEHAVIOR_TOKEN}
-Graph Token: {GRAPH_TOKEN}
-Historical Interactions: {{inters}}
-
-Task: Determine whether the user is malicious (Shilling Attack).
-
-Output constraints:
-- Output MUST be exactly one token: Yes or No.
-- Do NOT output any other text.
-"""
-prompt["response"] = "{anomaly_label}"
-anomaly_only_prompt.append(prompt)
-
-# =============== rec_only ===============
-rec_only_prompt = []
+# =============== rec_train (train-only recommendation template) ===============
+rec_train_prompt = []
 prompt = {}
 prompt["system"] = """You are a recommendation system.
 
@@ -98,28 +34,19 @@ Output constraints:
 - Do NOT output explanations or extra lines.
 """
 prompt["response"] = """Final Recommendation List: {rec_list}"""
-rec_only_prompt.append(prompt)
+rec_train_prompt.append(prompt)
 
 # =============== simple_rec (low-risk route) ===============
 simple_rec_prompt = []
 prompt = {}
-prompt["system"] = """You are a recommendation system.
-
-Generate a concise recommendation result for low-risk users.
-
-Output constraints:
-- Output MUST be exactly one line.
-- The line MUST start with: Final Recommendation List:
-- Recommend EXACTLY top-k NEW items not in Historical Interactions.
-- Use ", " as the ONLY separator.
-- Do NOT output any explanation or extra lines.
-"""
-prompt["instruction"] = f"""USER_ID: {{user_id}}
-Behavior Token: {BEHAVIOR_TOKEN}
-Graph Token: {GRAPH_TOKEN}
+prompt["system"] = """You are a recommendation model."""
+prompt["instruction"] = f"""User Behavior Token: {BEHAVIOR_TOKEN}
+User Graph Token: {GRAPH_TOKEN}
 Historical Interactions: {{inters}}
 
-Task: Recommend EXACTLY top-{{top_k}} NEW items (not in history).
+Recommend the next item IDs directly based on the user's history and representations.
+
+Final Recommendation List:
 """
 prompt["response"] = """Final Recommendation List: {rec_list}"""
 simple_rec_prompt.append(prompt)
@@ -127,35 +54,43 @@ simple_rec_prompt.append(prompt)
 # =============== deep_rec (high-risk route) ===============
 deep_rec_prompt = []
 prompt = {}
-prompt["system"] = """You are a recommendation system.
+prompt["system"] = """You are a cautious and defense-oriented recommendation model."""
+prompt["instruction"] = f"""The current user case is high-risk. Some signals in the input may be unreliable, noisy, abnormal, or intentionally misleading. Your goal is to generate a safe and robust recommendation list that remains aligned with the user's stable preferences.
 
-For high-risk users, apply defensive internal reasoning before finalizing recommendations:
-- check consistency against the recent interaction pattern,
-- avoid suspiciously concentrated or repetitive candidates,
-- prioritize robust and diverse items that are still relevant.
-Do not reveal your reasoning.
+Input information:
 
-Output constraints:
-- Output MUST be exactly one line.
-- The line MUST start with: Final Recommendation List:
-- Recommend EXACTLY top-k NEW items not in Historical Interactions.
-- Use ", " as the ONLY separator.
-- Do NOT output any explanation or extra lines.
-"""
-prompt["instruction"] = f"""USER_ID: {{user_id}}
-Behavior Token: {BEHAVIOR_TOKEN}
-Graph Token: {GRAPH_TOKEN}
-Historical Interactions: {{inters}}
+- User Behavior Token: {BEHAVIOR_TOKEN}
+- User Graph Token: {GRAPH_TOKEN}
+- Historical Interactions: {{inters}}
 
-Task: Carefully recommend EXACTLY top-{{top_k}} NEW items (not in history) with a defensive selection strategy.
+You must internally follow this fixed decision procedure:
+
+Step 1. Identify the user's stable and repeated preference patterns from the historical interactions.
+Ignore isolated or weakly supported interests.
+
+Step 2. Use the behavior token to verify whether the user's behavioral tendency is coherent with the historical preference pattern.
+
+Step 3. Use the graph token only as supplementary context.
+If the graph-related signal conflicts with the user's own history or behavior tendency, trust the user's own stable preference more.
+
+Step 4. Exclude candidates that appear to be driven mainly by abnormal short-term drift, noisy relational influence, weak evidence, or suspicious signals.
+
+Step 5. From the remaining candidates, choose the items that are most consistent with the user's long-term interests and are more reliable under risky conditions.
+
+Strict output rules:
+
+- Follow the above steps internally.
+- Do not output your reasoning.
+- Do not output any analysis.
+- Only output the final recommendation list.
+
+Final Recommendation List:
 """
 prompt["response"] = """Final Recommendation List: {rec_list}"""
 deep_rec_prompt.append(prompt)
 
 all_prompt = {
-    "anomaly_rec": anomaly_rec_prompt,
-    "anomaly_only": anomaly_only_prompt,
-  "rec_only": rec_only_prompt,
-  "simple_rec": simple_rec_prompt,
-  "deep_rec": deep_rec_prompt,
+    "rec_train": rec_train_prompt,
+    "simple_rec": simple_rec_prompt,
+    "deep_rec": deep_rec_prompt,
 }

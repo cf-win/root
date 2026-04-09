@@ -23,7 +23,8 @@ torchrun --nproc_per_node=1 train_t2rec.py \
     --gradient_accumulation_steps 8 \
     --learning_rate 1e-4 \
     --epochs 1 \
-    --task simple_rec \
+    --logging_step 10 \
+    --task rec_train \
     --train_prompt_sample_num 1 \
     --train_data_sample_num 0 \
     --index_file .index.json \
