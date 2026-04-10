@@ -57,11 +57,17 @@ class TrieConstrainedLogitsProcessor(LogitsProcessor):
 
 		for item in candidate_items:
 			ids0 = tokenizer.encode(" " + item, add_special_tokens=False)
+			ids0_plain = tokenizer.encode(item, add_special_tokens=False)
 			idsn = tokenizer.encode(", " + item, add_special_tokens=False)
+			idsn_tight = tokenizer.encode("," + item, add_special_tokens=False)
 			if ids0:
 				self.first_item_trie.add(ids0)
+			if ids0_plain:
+				self.first_item_trie.add(ids0_plain)
 			if idsn:
 				self.next_item_trie.add(idsn)
+			if idsn_tight:
+				self.next_item_trie.add(idsn_tight)
 
 		self.rec_anchor_ids = tokenizer.encode("Final Recommendation List:", add_special_tokens=False)
 
@@ -119,10 +125,13 @@ class TrieConstrainedLogitsProcessor(LogitsProcessor):
 		for row in range(input_ids.size(0)):
 			seq = input_ids[row].tolist()
 			anchor_pos = _find_subseq(seq, self.rec_anchor_ids)
-			if anchor_pos < 0:
-				continue
 
-			rec_suffix_ids = seq[anchor_pos + len(self.rec_anchor_ids):]
+			# 使用 inputs_embeds 生成时，解码序列里常常不包含原始 prompt，
+			# 这时直接把整个已生成序列当作推荐列表前缀来约束。
+			if anchor_pos < 0:
+				rec_suffix_ids = seq
+			else:
+				rec_suffix_ids = seq[anchor_pos + len(self.rec_anchor_ids):]
 			allowed = self._allowed_after_anchor(rec_suffix_ids)
 
 			mask = torch.full_like(scores[row], float("-inf"))

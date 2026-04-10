@@ -39,17 +39,32 @@ def parse_rec_sids(text: str):
     从模型输出中提取推荐列表的 SID 列表
     """
     m = re.search(r"Final Recommendation List:\s*(.*)", text)
-    if not m:
-        return []
-    rec_line = m.group(1).strip()
-    # 严格按逗号分
-    parts = [p.strip() for p in rec_line.split(",")]
-    sids = []
-    for p in parts:
-        sid = "".join(re.findall(r"<[^>]+>", p))
-        if sid:  # 没解析出来就丢掉
-            sids.append(sid)
-    return sids
+    if m:
+        rec_line = m.group(1).strip()
+        parts = [p.strip() for p in rec_line.split(",")]
+        sids = []
+        for p in parts:
+            sid = "".join(re.findall(r"<[^>]+>", p))
+            if sid:
+                sids.append(sid)
+        return sids
+
+    # fallback 1: 选择最后一个包含多个 SID 的非空行
+    candidate_lines = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        line_sids = ["".join(re.findall(r"<[^>]+>", part)) for part in line.split(",")]
+        line_sids = [sid for sid in line_sids if sid]
+        if len(line_sids) >= 2:
+            candidate_lines.append(line_sids)
+    if candidate_lines:
+        return candidate_lines[-1]
+
+    # fallback 2: 直接从全文提取 SID，兼容纯列表输出
+    flat_sids = re.findall(r"(?:<[^>]+>){4}", text)
+    return flat_sids
 
 
 def sid_to_item_list(text, token_to_item):

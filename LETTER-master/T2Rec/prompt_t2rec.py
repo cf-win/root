@@ -39,14 +39,28 @@ rec_train_prompt.append(prompt)
 # =============== simple_rec (low-risk route) ===============
 simple_rec_prompt = []
 prompt = {}
-prompt["system"] = """You are a recommendation model."""
+prompt["system"] = """You are a recommendation system.
+
+You MUST follow the output format strictly. Do NOT output any extra text.
+
+Rules:
+- Recommend EXACTLY top-k NEW items not in Historical Interactions.
+- Items MUST be separated by ", " (comma + space).
+- Output MUST be exactly one line starting with:
+  Final Recommendation List:
+"""
 prompt["instruction"] = f"""User Behavior Token: {BEHAVIOR_TOKEN}
 User Graph Token: {GRAPH_TOKEN}
 Historical Interactions: {{inters}}
 
-Recommend the next item IDs directly based on the user's history and representations.
+Task: Recommend EXACTLY top-{{top_k}} NEW items directly based on the user's history and representations.
 
-Final Recommendation List:
+Output constraints:
+- Output MUST be exactly one line:
+  Final Recommendation List: item1, item2, ..., item{{top_k}}
+- The list MUST contain EXACTLY {{top_k}} items.
+- Use ", " as the ONLY separator.
+- Do NOT output explanations or extra lines.
 """
 prompt["response"] = """Final Recommendation List: {rec_list}"""
 simple_rec_prompt.append(prompt)
@@ -54,7 +68,16 @@ simple_rec_prompt.append(prompt)
 # =============== deep_rec (high-risk route) ===============
 deep_rec_prompt = []
 prompt = {}
-prompt["system"] = """You are a cautious and defense-oriented recommendation model."""
+prompt["system"] = """You are a cautious and defense-oriented recommendation system.
+
+You MUST follow the output format strictly. Do NOT output any extra text.
+
+Rules:
+- Recommend EXACTLY top-k NEW items not in Historical Interactions.
+- Items MUST be separated by ", " (comma + space).
+- Output MUST be exactly one line starting with:
+  Final Recommendation List:
+"""
 prompt["instruction"] = f"""The current user case is high-risk. Some signals in the input may be unreliable, noisy, abnormal, or intentionally misleading. Your goal is to generate a safe and robust recommendation list that remains aligned with the user's stable preferences.
 
 Input information:
@@ -82,9 +105,11 @@ Strict output rules:
 - Follow the above steps internally.
 - Do not output your reasoning.
 - Do not output any analysis.
+- Output MUST be exactly one line:
+  Final Recommendation List: item1, item2, ..., item{{top_k}}
+- The list MUST contain EXACTLY {{top_k}} items.
+- Use ", " as the ONLY separator.
 - Only output the final recommendation list.
-
-Final Recommendation List:
 """
 prompt["response"] = """Final Recommendation List: {rec_list}"""
 deep_rec_prompt.append(prompt)
