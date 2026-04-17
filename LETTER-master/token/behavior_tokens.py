@@ -28,6 +28,7 @@ HIDDEN_DIM = 32  # Match RQ-VAE's cf_emb dimension
 NUM_HEADS = 2
 NUM_LAYERS = 2
 DROPOUT = 0.1
+RESERVED_TAIL = 2  # leave-one-out: reserve last 2 interactions for valid/test
 
 TRAIN_SASREC = True
 TRAIN_EPOCHS = 5
@@ -41,6 +42,7 @@ TOKENS_OUT = os.path.join(SAVE_DIR, f"{DATASET}_behavior_tokens.pt")
 MAP_OUT = os.path.join(SAVE_DIR, f"{DATASET}_id_mappings_behavior.json")
 ITEM_EMB_OUT = os.path.join(SAVE_DIR, f"{DATASET}-{HIDDEN_DIM}d-sasrec.pt")
 
+
 def load_user_sequences_from_json(
     data_dir: str,
     dataset: str,
@@ -49,37 +51,54 @@ def load_user_sequences_from_json(
     """
     Load user sequences from standard JSON format.
     Returns: (user_seqs, num_items, user2idx, idx2user)
-    
+
     Note: item indices in inter.json are already 0-indexed.
     We add 1 to make them 1-indexed (0 is padding for SASRec).
     """
     inter_file = os.path.join(data_dir, f"{dataset}.inter.json")
     item_file = os.path.join(data_dir, f"{dataset}.item.json")
-    
+
     with open(inter_file, "r") as f:
         inter_data = json.load(f)
     with open(item_file, "r") as f:
         item_data = json.load(f)
-    
+
     num_items = len(item_data)
     print(f"Loaded {len(inter_data)} users, {num_items} items")
-    
+
     # Build user mapping
     user2idx: Dict[str, int] = {}
     idx2user: Dict[int, str] = {}
-    
+
     user_seqs: Dict[str, List[int]] = {}
-    
+
     for user_idx_str, item_seq in inter_data.items():
         user_idx = int(user_idx_str)
         user2idx[user_idx_str] = user_idx
         idx2user[user_idx] = user_idx_str
-        
+
         # Convert 0-indexed to 1-indexed (0 is padding)
         seq = [item_idx + 1 for item_idx in item_seq]
         user_seqs[user_idx_str] = seq[-max_seq_len:]
-    
+
     return user_seqs, num_items, user2idx, idx2user
+
+
+def build_train_user_sequences(
+    user_seqs_full: Dict[str, List[int]],
+    max_seq_len: int,
+    reserved_tail: int = 2,
+) -> Dict[str, List[int]]:
+    """Keep only training prefix per user to avoid valid/test leakage."""
+    train_user_seqs: Dict[str, List[int]] = {}
+    for uid, seq in user_seqs_full.items():
+        if reserved_tail > 0:
+            seq_train = seq[:-reserved_tail] if len(seq) > reserved_tail else []
+        else:
+            seq_train = seq
+        train_user_seqs[uid] = seq_train[-max_seq_len:]
+    return train_user_seqs
+
 
 class SASRec(nn.Module):
     def __init__(
@@ -127,7 +146,7 @@ class SASRec(nn.Module):
         B, T = seq.shape
         pos = torch.arange(T, device=seq.device).unsqueeze(0).expand(B, T)
 
-        pad_mask = (seq == 0)
+        pad_mask = seq == 0
         all_pad = pad_mask.all(dim=1)
         if all_pad.any():
             pad_mask = pad_mask.clone()
@@ -207,8 +226,13 @@ def train_sasrec_minimal(model: SASRec, user_seqs: Dict[str, List[int]], num_ite
 
 
 if __name__ == "__main__":
-    user_seqs, num_items, user2idx, idx2user = load_user_sequences_from_json(
+    user_seqs_full, num_items, user2idx, idx2user = load_user_sequences_from_json(
         DATA_DIR, DATASET, MAX_SEQ_LEN
+    )
+    user_seqs = build_train_user_sequences(
+        user_seqs_full,
+        max_seq_len=MAX_SEQ_LEN,
+        reserved_tail=RESERVED_TAIL,
     )
 
     mappings = {
@@ -221,6 +245,8 @@ if __name__ == "__main__":
         "num_heads": NUM_HEADS,
         "num_layers": NUM_LAYERS,
         "dropout": DROPOUT,
+        "train_only": True,
+        "reserved_tail": RESERVED_TAIL,
     }
     with open(MAP_OUT, "w", encoding="utf-8") as f:
         json.dump(mappings, f, ensure_ascii=False, indent=2)
@@ -246,6 +272,10 @@ if __name__ == "__main__":
 
     with torch.no_grad():
         for uid_raw, seq in user_seqs.items():
+            if len(seq) == 0:
+                behavior_tokens[str(uid_raw)] = torch.zeros(HIDDEN_DIM, dtype=torch.float32)
+                continue
+
             seq_tensor = torch.zeros(MAX_SEQ_LEN, dtype=torch.long, device=DEVICE)
             seq = seq[-MAX_SEQ_LEN:]
             if len(seq) > 0:

@@ -32,9 +32,9 @@ def get_label_amazon_legacy(review_data):
 
     ratio = helpful_votes / total_votes
 
-    if ratio > 0.7:
+    if ratio > 0.85:
         return 1  # Genuine
-    elif ratio < 0.3:
+    elif ratio < 0.4:
         return 0  # Malicious
     else:
         return -1  # 中间状态

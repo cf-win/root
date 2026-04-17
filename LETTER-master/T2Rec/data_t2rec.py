@@ -89,7 +89,53 @@ class AnomalyRecDataset(Dataset):
                     else:
                         self.anomaly_labels[uid] = lbl
 
-    def _load_inters_from_csv(self):
+        self._load_user_meta()
+
+    def _load_user_meta(self):
+        self.user_meta = {}
+        meta_file = os.path.join(self.data_path, self.dataset + ".user_meta.json")
+        if os.path.exists(meta_file):
+            with open(meta_file, "r", encoding="utf-8") as f:
+                raw_meta = json.load(f)
+                for uid, meta in raw_meta.items():
+                    self.user_meta[uid] = {
+                        "user_type": meta.get("user_type", "unlabel"),
+                        "risk_label": meta.get("risk_label", -1),
+                        "det_train_flag": bool(meta.get("det_train_flag", False)),
+                        "det_test_flag": bool(meta.get("det_test_flag", False)),
+                        "risk_loss_mask": bool(meta.get("risk_loss_mask", False)),
+                    }
+
+    def _build_default_user_meta(self, uid):
+        label = self.anomaly_labels.get(uid, None)
+        if label == "Yes":
+            return {
+                "user_type": "bad",
+                "risk_label": 1,
+                "det_train_flag": True,
+                "det_test_flag": False,
+                "risk_loss_mask": True,
+            }
+        if label == "No":
+            return {
+                "user_type": "good",
+                "risk_label": 0,
+                "det_train_flag": True,
+                "det_test_flag": False,
+                "risk_loss_mask": True,
+            }
+        return {
+            "user_type": "unlabel",
+            "risk_label": -1,
+            "det_train_flag": False,
+            "det_test_flag": False,
+            "risk_loss_mask": False,
+        }
+
+    def _build_user_labels(self):
+        for uid in self.remapped_inters.keys():
+            if uid not in self.user_meta:
+                self.user_meta[uid] = self._build_default_user_meta(uid)
         csv_file = os.path.join(self.data_path, self.dataset + "_filled_label.csv")
         if not os.path.exists(csv_file):
             csv_file = os.path.join(self.data_path, self.dataset + ".csv")
@@ -104,20 +150,15 @@ class AnomalyRecDataset(Dataset):
                 uid = row.get("user_id", row.get("\ufeffuser_id", ""))
                 iid = row.get("item_id", "")
                 t = int(row.get("time", 0))
-                label = row.get("label", "-1")
                 if not uid or not iid:
                     continue
-                user_item_time.append((uid, iid, t, label))
+                user_item_time.append((uid, iid, t))
 
         user_item_time.sort(key=lambda x: (x[0], x[2]))
-        for uid, iid, t, label in user_item_time:
+        for uid, iid, t in user_item_time:
             if uid not in inters:
                 inters[uid] = []
             inters[uid].append(iid)
-            if label != "-1" and label != "":
-                # label=0 是恶意用户(Yes), label=1 是正常用户(No)
-                lbl = "Yes" if label == "0" else "No"
-                self.anomaly_labels[uid] = lbl
         return inters
 
     def _load_item_meta(self):
@@ -163,9 +204,9 @@ class AnomalyRecDataset(Dataset):
                         }
 
     def _build_user_labels(self):
-        for uid in self.inters.keys():
-            if uid not in self.anomaly_labels:
-                self.anomaly_labels[uid] = "No"
+        for uid in self.remapped_inters.keys():
+            if uid not in self.user_meta:
+                self.user_meta[uid] = self._build_default_user_meta(uid)
 
     def _load_tokens(self):
         graph_token_path = getattr(self.args, "graph_token_path", None)
@@ -292,13 +333,11 @@ class AnomalyRecDataset(Dataset):
 
     def _process_train_data(self):
         """
-        训练集构建：
-        - 原逻辑：先构造全量 inter_data，再按 sample_num 抽样
-        - ✅ 这里加入 early-stop：如果 sample_num>0，则构造到 sample_num 立即返回
-          这样可以非常快速地验证训练流程，避免长时间预处理/内存暴涨。
+        Leave-one-out 训练集构建（严格时间序列）：
+        - 对每个用户，排除最后 2 个物品（用于 valid/test）
+        - 在剩余前缀序列中，每个位置都作为单一 target 生成样本
         """
         inter_data = []
-        k = self.top_k  # 这里的 k 就是你要留给 valid/test 的最后 k 个
 
         # 仅用于快速验证时的提示
         show_progress = (self.mode == "train" and self.sample_num is not None and self.sample_num > 0)
@@ -306,33 +345,42 @@ class AnomalyRecDataset(Dataset):
         for uid in self.remapped_inters:
             full_seq = self.remapped_inters[uid]
 
-            # 只用前面部分做训练：去掉最后 k 个 item
-            if len(full_seq) <= k + 1:
+            # 严格 leave-one-out：最后两个物品分别给 valid/test
+            if len(full_seq) < 4:
                 continue
-            items = full_seq[:-k]
+            items = full_seq[:-2]
 
             anomaly_label = self.anomaly_labels.get(uid, "No")
 
-            # 滑窗：对 items 里的每个位置 i 构造一个样本
+            # 每个位置 i 作为单一 target（history=items[:i], target=items[i]）
             for i in range(1, len(items)):
                 one_data = dict()
                 one_data["user_id"] = uid
 
-                # history
                 history_full = items[:i]
                 history_for_text = history_full[-self.max_his_len:] if self.max_his_len > 0 else history_full
 
-                # target（真实未来序列，可能不足 k）
-                target_items = items[i:i + k]
-                full_items, is_real = self._pad_rec_items(target_items, history_items=history_full)
+                target_item = items[i]
+                target_items = [target_item]
 
-                one_data["rec_list"] = ", ".join(full_items)
-                one_data["rec_items"] = full_items
-                one_data["rec_is_real"] = is_real
+                one_data["rec_list"] = target_item
+                one_data["rec_items"] = target_items
+                one_data["rec_is_real"] = [1]
 
-                one_data["item"] = items[i]
-                one_data["anomaly_label"] = anomaly_label
-                one_data["top_k"] = k
+                one_data["item"] = target_item
+                one_data["top_k"] = self.top_k
+
+                user_meta = self.user_meta.get(uid, self._build_default_user_meta(uid))
+                one_data["user_type"] = user_meta["user_type"]
+                one_data["risk_label"] = user_meta["risk_label"]
+                one_data["det_train_flag"] = user_meta["det_train_flag"]
+                one_data["det_test_flag"] = user_meta["det_test_flag"]
+                one_data["risk_loss_mask"] = user_meta["risk_loss_mask"]
+                one_data["anomaly_label"] = (
+                    "Yes" if user_meta["risk_label"] == 1 else
+                    "No" if user_meta["risk_label"] == 0 else
+                    "Unlabel"
+                )
 
                 pref1, pref2 = self._extract_preferences(history_for_text)
                 one_data["preference_1"] = pref1
@@ -349,15 +397,12 @@ class AnomalyRecDataset(Dataset):
                 one_data["inters"] = self.his_sep.join(history_text)
                 inter_data.append(one_data)
 
-                # ✅ early-stop：达到 sample_num 立即返回（快速验证训练）
                 if self.sample_num is not None and self.sample_num > 0 and len(inter_data) >= self.sample_num:
                     if show_progress:
                         print(f"[Dataset] Early-stop train set building at {len(inter_data)} samples (sample_num={self.sample_num}).")
                     return inter_data
 
-        # 走到这里说明 sample_num<=0 或者数据本身不足
         if self.sample_num is not None and self.sample_num > 0 and self.sample_num < len(inter_data):
-            # 理论上 early-stop 已经 return，这里只是兜底
             all_idx = list(range(len(inter_data)))
             sample_idx = np.random.choice(all_idx, self.sample_num, replace=False)
             inter_data = [inter_data[i] for i in sample_idx]
@@ -365,33 +410,47 @@ class AnomalyRecDataset(Dataset):
         return inter_data
 
     def _process_valid_data(self):
+        """
+        Leave-one-out 验证集：
+        - 每个用户倒数第二个物品为唯一 target
+        - history 为它之前的所有交互
+        """
         inter_data = []
         for uid in self.remapped_inters:
             items = self.remapped_inters[uid]
             anomaly_label = self.anomaly_labels.get(uid, "No")
 
-            # 保证 target 是 top_k 个真实 item
-            if len(items) <= self.top_k:
+            if len(items) < 2:
                 continue
 
             one_data = dict()
             one_data["user_id"] = uid
 
-            history_full = items[:-self.top_k]
-            target_items = items[-self.top_k:]  # top_k 个真实目标（与 test 一样）
+            history_full = items[:-2]
+            target_item = items[-2]
 
             history_for_text = history_full
             if self.max_his_len > 0:
                 history_for_text = history_for_text[-self.max_his_len:]
 
-            # valid 的标准答案直接用真实 target_items，不随机补齐
-            one_data["rec_list"] = ", ".join(target_items)
-            one_data["rec_items"] = target_items
-            one_data["rec_is_real"] = [1] * len(target_items)
+            one_data["rec_list"] = target_item
+            one_data["rec_items"] = [target_item]
+            one_data["rec_is_real"] = [1]
 
-            one_data["item"] = target_items[0]  # 保留字段
-            one_data["anomaly_label"] = anomaly_label
+            one_data["item"] = target_item
             one_data["top_k"] = self.top_k
+
+            user_meta = self.user_meta.get(uid, self._build_default_user_meta(uid))
+            one_data["user_type"] = user_meta["user_type"]
+            one_data["risk_label"] = user_meta["risk_label"]
+            one_data["det_train_flag"] = user_meta["det_train_flag"]
+            one_data["det_test_flag"] = user_meta["det_test_flag"]
+            one_data["risk_loss_mask"] = user_meta["risk_loss_mask"]
+            one_data["anomaly_label"] = (
+                "Yes" if user_meta["risk_label"] == 1 else
+                "No" if user_meta["risk_label"] == 0 else
+                "Unlabel"
+            )
 
             pref1, pref2 = self._extract_preferences(history_for_text)
             one_data["preference_1"] = pref1
@@ -412,38 +471,46 @@ class AnomalyRecDataset(Dataset):
 
     def _process_test_data(self):
         """
-        改动点：
-        - 目标（target）改为最后 top_k 个真实 item：items[-top_k:]
-        - 历史（history）使用 items[:-top_k]
-        - 为了保证 target 全是真实的 top_k 个，如果 len(items) <= top_k，则跳过该用户
+        Leave-one-out 测试集：
+        - 每个用户最后一个物品为唯一 target
+        - history 为它之前的所有交互
         """
         inter_data = []
         for uid in self.remapped_inters:
             items = self.remapped_inters[uid]
             anomaly_label = self.anomaly_labels.get(uid, "No")
 
-            # ===== 保证 target 是 top_k 个真实 item =====
-            if len(items) <= self.top_k:
+            if len(items) < 1:
                 continue
 
             one_data = dict()
             one_data["user_id"] = uid
 
-            history_full = items[:-self.top_k]
-            target_items = items[-self.top_k:]  # top_k 个真实目标
+            history_full = items[:-1]
+            target_item = items[-1]
 
             history_for_text = history_full
             if self.max_his_len > 0:
                 history_for_text = history_for_text[-self.max_his_len:]
 
-            # ===== test 的标准答案直接用真实 target_items，不随机补齐 =====
-            one_data["rec_list"] = ", ".join(target_items)
-            one_data["rec_items"] = target_items
-            one_data["rec_is_real"] = [1] * len(target_items)
+            one_data["rec_list"] = target_item
+            one_data["rec_items"] = [target_item]
+            one_data["rec_is_real"] = [1]
 
-            one_data["item"] = target_items[0]  # 保留字段，实际 test 评估不依赖它
-            one_data["anomaly_label"] = anomaly_label
+            one_data["item"] = target_item
             one_data["top_k"] = self.top_k
+
+            user_meta = self.user_meta.get(uid, self._build_default_user_meta(uid))
+            one_data["user_type"] = user_meta["user_type"]
+            one_data["risk_label"] = user_meta["risk_label"]
+            one_data["det_train_flag"] = user_meta["det_train_flag"]
+            one_data["det_test_flag"] = user_meta["det_test_flag"]
+            one_data["risk_loss_mask"] = user_meta["risk_loss_mask"]
+            one_data["anomaly_label"] = (
+                "Yes" if user_meta["risk_label"] == 1 else
+                "No" if user_meta["risk_label"] == 0 else
+                "Unlabel"
+            )
 
             pref1, pref2 = self._extract_preferences(history_for_text)
             one_data["preference_1"] = pref1
@@ -497,7 +564,18 @@ class AnomalyRecDataset(Dataset):
     def __getitem__(self, index):
         idx = index // self.prompt_sample_num if self.mode == "train" else index
         d = self.inter_data[idx]
-        prompt = self.prompts[0]
+        route_simple_input = self._get_text_data(d, all_prompt["simple_rec"][0])[0]
+        route_deep_input = self._get_text_data(d, all_prompt["deep_rec"][0])[0]
+        if self.mode == "train":
+            if d["det_train_flag"] and d["risk_label"] == 1:
+                prompt = all_prompt["deep_rec"][0]
+                route_type = "deep"
+            else:
+                prompt = all_prompt["simple_rec"][0]
+                route_type = "simple"
+        else:
+            prompt = self.prompts[0]
+            route_type = "simple"
 
         input_text, output_text = self._get_text_data(d, prompt)
         graph_token, behavior_token = self._get_tokens(d["user_id"])
@@ -509,9 +587,14 @@ class AnomalyRecDataset(Dataset):
             behavior_token=behavior_token,
             user_id=d["user_id"],
             anomaly_label=d["anomaly_label"],
-            risk_label=1.0 if d["anomaly_label"] == "Yes" else 0.0,
+            risk_label=d["risk_label"],
+            det_train_flag=d["det_train_flag"],
+            det_test_flag=d["det_test_flag"],
+            user_type=d["user_type"],
+            risk_loss_mask=d["risk_loss_mask"],
             rec_items=d.get("rec_items", None),
             rec_is_real=d.get("rec_is_real", None),
-            route_simple_input=self._get_text_data(d, all_prompt["simple_rec"][0])[0] if self.mode == "test" else None,
-            route_deep_input=self._get_text_data(d, all_prompt["deep_rec"][0])[0] if self.mode == "test" else None,
+            route_simple_input=route_simple_input,
+            route_deep_input=route_deep_input,
+            route_type=route_type,
         )

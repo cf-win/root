@@ -28,10 +28,40 @@ from collator_t2rec import T2RecCollator
 
 class T2RecTrainer(transformers.Trainer):
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._last_branch_log_step = -1
+        self._reset_branch_loss_meter()
+
+    def _reset_branch_loss_meter(self):
+        self._branch_loss_meter = {
+            "rec_loss": {"sum": 0.0, "count": 0},
+            "risk_loss": {"sum": 0.0, "count": 0},
+            "total_loss": {"sum": 0.0, "count": 0},
+        }
+
+    def _update_branch_loss_meter(self, outputs):
+        for name in ("rec_loss", "risk_loss", "total_loss"):
+            value = getattr(outputs, name, None)
+            if value is None:
+                continue
+            meter = self._branch_loss_meter[name]
+            meter["sum"] += float(value.detach().to(torch.float32).item())
+            meter["count"] += 1
+
+    def _get_avg_branch_loss_log(self):
+        log_data = {}
+        for name, meter in self._branch_loss_meter.items():
+            if meter["count"] <= 0:
+                continue
+            log_data["avg_" + name] = meter["sum"] / meter["count"]
+        return log_data
+
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         graph_tokens = inputs.pop("graph_tokens", None)
         behavior_tokens = inputs.pop("behavior_tokens", None)
         risk_labels = inputs.pop("risk_labels", None)
+        risk_loss_mask = inputs.pop("risk_loss_mask", None)
         labels = inputs.get("labels")
         outputs = model(
             input_ids=inputs["input_ids"],
@@ -40,6 +70,7 @@ class T2RecTrainer(transformers.Trainer):
             graph_tokens=graph_tokens,
             behavior_tokens=behavior_tokens,
             risk_labels=risk_labels,
+            risk_loss_mask=risk_loss_mask,
         )
         loss = outputs.loss
         current_step = int(getattr(self.state, "global_step", 0))
@@ -52,19 +83,13 @@ class T2RecTrainer(transformers.Trainer):
             and getattr(self, "_last_branch_log_step", -1) != current_step
         )
         if should_log:
-            log_data = {}
-            rec_loss = getattr(outputs, "rec_loss", None)
-            risk_loss = getattr(outputs, "risk_loss", None)
-            total_loss = getattr(outputs, "total_loss", None)
-            if rec_loss is not None:
-                log_data["rec_loss"] = float(rec_loss.detach().to(torch.float32).item())
-            if risk_loss is not None:
-                log_data["risk_loss"] = float(risk_loss.detach().to(torch.float32).item())
-            if total_loss is not None:
-                log_data["total_loss"] = float(total_loss.detach().to(torch.float32).item())
+            log_data = self._get_avg_branch_loss_log()
             if log_data:
                 self.log(log_data)
                 self._last_branch_log_step = current_step
+                self._reset_branch_loss_meter()
+        if self.model.training:
+            self._update_branch_loss_meter(outputs)
         return (loss, outputs) if return_outputs else loss
 
 

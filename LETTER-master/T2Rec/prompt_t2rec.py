@@ -14,26 +14,20 @@ prompt["system"] = """You are a recommendation system.
 You MUST follow the output format strictly. Do NOT output any extra text.
 
 Rules:
-- Recommend EXACTLY top-k NEW items not in Historical Interactions.
-- Items MUST be separated by ", " (comma + space).
-- Output MUST be exactly one line starting with:
-  Final Recommendation List:
+- Recommend EXACTLY one next NEW item not in Historical Interactions.
 """
 prompt["instruction"] = f"""USER_ID: {{user_id}}
 Behavior Token: {BEHAVIOR_TOKEN}
 Graph Token: {GRAPH_TOKEN}
 Historical Interactions: {{inters}}
 
-Task: Recommend EXACTLY top-{{top_k}} NEW items (not in history).
+Task: Recommend EXACTLY one next NEW item (not in history).
 
 Output constraints:
-- Output MUST be exactly one line:
-  Final Recommendation List: item1, item2, ..., item{{top_k}}
-- The list MUST contain EXACTLY {{top_k}} items.
-- Use ", " as the ONLY separator.
+- Output MUST be exactly one item token.
 - Do NOT output explanations or extra lines.
 """
-prompt["response"] = """Final Recommendation List: {rec_list}"""
+prompt["response"] = """{item}"""
 rec_train_prompt.append(prompt)
 
 # =============== simple_rec (low-risk route) ===============
@@ -44,25 +38,19 @@ prompt["system"] = """You are a recommendation system.
 You MUST follow the output format strictly. Do NOT output any extra text.
 
 Rules:
-- Recommend EXACTLY top-k NEW items not in Historical Interactions.
-- Items MUST be separated by ", " (comma + space).
-- Output MUST be exactly one line starting with:
-  Final Recommendation List:
+- Recommend EXACTLY one next NEW item not in Historical Interactions.
 """
 prompt["instruction"] = f"""User Behavior Token: {BEHAVIOR_TOKEN}
 User Graph Token: {GRAPH_TOKEN}
 Historical Interactions: {{inters}}
 
-Task: Recommend EXACTLY top-{{top_k}} NEW items directly based on the user's history and representations.
+Task: Recommend EXACTLY one next NEW item directly based on the user's history and representations.
 
 Output constraints:
-- Output MUST be exactly one line:
-  Final Recommendation List: item1, item2, ..., item{{top_k}}
-- The list MUST contain EXACTLY {{top_k}} items.
-- Use ", " as the ONLY separator.
+- Output MUST be exactly one item token.
 - Do NOT output explanations or extra lines.
 """
-prompt["response"] = """Final Recommendation List: {rec_list}"""
+prompt["response"] = """{item}"""
 simple_rec_prompt.append(prompt)
 
 # =============== deep_rec (high-risk route) ===============
@@ -73,12 +61,9 @@ prompt["system"] = """You are a cautious and defense-oriented recommendation sys
 You MUST follow the output format strictly. Do NOT output any extra text.
 
 Rules:
-- Recommend EXACTLY top-k NEW items not in Historical Interactions.
-- Items MUST be separated by ", " (comma + space).
-- Output MUST be exactly one line starting with:
-  Final Recommendation List:
+- Recommend EXACTLY one next NEW item not in Historical Interactions.
 """
-prompt["instruction"] = f"""The current user case is high-risk. Some signals in the input may be unreliable, noisy, abnormal, or intentionally misleading. Your goal is to generate a safe and robust recommendation list that remains aligned with the user's stable preferences.
+prompt["instruction"] = f"""The current user case is high-risk. Some signals in the input may be unreliable, noisy, abnormal, or intentionally misleading. Your goal is to generate a safe and robust next-item recommendation that remains aligned with the user's stable preferences.
 
 Input information:
 
@@ -98,20 +83,17 @@ If the graph-related signal conflicts with the user's own history or behavior te
 
 Step 4. Exclude candidates that appear to be driven mainly by abnormal short-term drift, noisy relational influence, weak evidence, or suspicious signals.
 
-Step 5. From the remaining candidates, choose the items that are most consistent with the user's long-term interests and are more reliable under risky conditions.
+Step 5. From the remaining candidates, choose the single item that is most consistent with the user's long-term interests and is more reliable under risky conditions.
 
 Strict output rules:
 
 - Follow the above steps internally.
 - Do not output your reasoning.
 - Do not output any analysis.
-- Output MUST be exactly one line:
-  Final Recommendation List: item1, item2, ..., item{{top_k}}
-- The list MUST contain EXACTLY {{top_k}} items.
-- Use ", " as the ONLY separator.
-- Only output the final recommendation list.
+- Output MUST be exactly one item token.
+- Only output the final recommendation item.
 """
-prompt["response"] = """Final Recommendation List: {rec_list}"""
+prompt["response"] = """{item}"""
 deep_rec_prompt.append(prompt)
 
 all_prompt = {

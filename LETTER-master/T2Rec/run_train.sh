@@ -33,7 +33,6 @@ torchrun --nproc_per_node=1 train_t2rec.py \
     --lambda_risk 2.0 \
     --probe_dim 64 \
     --max_his_len 20 \
-    --top_k 10 \
     --lora_r 16 \
     --lora_alpha 32 \
     --lora_target_modules "q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj" \

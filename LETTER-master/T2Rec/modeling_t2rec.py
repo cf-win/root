@@ -152,6 +152,7 @@ class T2Rec(nn.Module):
         graph_tokens: Optional[torch.FloatTensor] = None,
         behavior_tokens: Optional[torch.FloatTensor] = None,
         risk_labels: Optional[torch.FloatTensor] = None,
+        risk_loss_mask: Optional[torch.FloatTensor] = None,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
         if inputs_embeds is None:
@@ -198,7 +199,7 @@ class T2Rec(nn.Module):
             rec_loss = self.compute_loss(logits, labels)
         if graph_tokens is not None and behavior_tokens is not None:
             risk_logit = self.compute_risk_logit(graph_tokens, behavior_tokens)
-            if risk_labels is not None:
+            if risk_labels is not None and risk_loss_mask is not None:
                 pos_weight = None
                 if self.risk_pos_weight is not None:
                     pos_weight = torch.tensor(
@@ -206,11 +207,16 @@ class T2Rec(nn.Module):
                         device=risk_logit.device,
                         dtype=risk_logit.dtype,
                     )
-                risk_loss = F.binary_cross_entropy_with_logits(
+                raw_risk_loss = F.binary_cross_entropy_with_logits(
                     risk_logit,
                     risk_labels.to(device=risk_logit.device, dtype=risk_logit.dtype),
                     pos_weight=pos_weight,
+                    reduction="none",
                 )
+                mask = risk_loss_mask.to(device=risk_logit.device, dtype=risk_logit.dtype)
+                masked_loss = raw_risk_loss * mask
+                denom = mask.sum().clamp_min(1.0)
+                risk_loss = masked_loss.sum() / denom
         if rec_loss is not None and risk_loss is not None:
             total_loss = rec_loss + self.lambda_risk * risk_loss
         elif rec_loss is not None:

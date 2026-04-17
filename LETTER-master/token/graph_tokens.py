@@ -2,7 +2,7 @@ import os
 import json
 import random
 from collections import defaultdict
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import pandas as pd
 import torch
@@ -16,30 +16,33 @@ torch.manual_seed(SEED)
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-DATA_PATH = "/root/autodl-tmp/Beauty_5/Beauty_5_filled_label.csv"
+DATASET = "Beauty_5"
+DATA_DIR = f"/root/autodl-tmp/{DATASET}"
+DATA_PATH = os.path.join(DATA_DIR, f"{DATASET}_filled_label.csv")
+ID_MAPPING_PATH = os.path.join(DATA_DIR, f"{DATASET}.id_mapping.json")
 
 SAVE_DIR = "/root/autodl-tmp/token/graph_token"
 os.makedirs(SAVE_DIR, exist_ok=True)
 
-TOKENS_OUT = os.path.join(SAVE_DIR, "Beauty_5_graph_tokens.pt")
+TOKENS_OUT = os.path.join(SAVE_DIR, f"{DATASET}_graph_tokens.pt")
+MAP_OUT = os.path.join(SAVE_DIR, f"{DATASET}_id_mappings_graph.json")
 
-MAP_OUT = os.path.join(SAVE_DIR, "Beauty_5_id_mappings_graph.json")
-
-NUM_WINDOWS_LIMIT = 20          
-WINDOW_LEN = 20000              
-STRIDE = 10000                 
+NUM_WINDOWS_LIMIT = 20
+WINDOW_LEN = 20000
+STRIDE = 10000
 DROP_EMPTY_WINDOWS = True
 
 HIDDEN_DIM = 64
 GAT_HEADS = 2
 GAT_DROPOUT = 0.1
 
-CONCAT_ITEM_MEAN = True 
+CONCAT_ITEM_MEAN = True
 
 SAVE_SEQUENCE = True
-AGGREGATE_IF_NOT_SEQUENCE = "mean"  
+AGGREGATE_IF_NOT_SEQUENCE = "mean"
 
-PRETRAINED_ENCODER_PATH = None 
+PRETRAINED_ENCODER_PATH = None
+RESERVED_TAIL = 2  # leave-one-out: reserve last 2 interactions for valid/test
 
 
 def load_data_and_mappings(data_path: str):
@@ -71,6 +74,43 @@ def load_data_and_mappings(data_path: str):
 
     return df, user2idx, item2idx, idx2user, idx2item
 
+
+def build_train_interactions(df: pd.DataFrame, reserved_tail: int = 2) -> pd.DataFrame:
+    """Keep only training interactions per user (drop last reserved_tail events)."""
+    if reserved_tail <= 0:
+        return df.copy()
+
+    work = df.copy().reset_index(drop=True)
+    work["_ord"] = work.groupby("user_id").cumcount()
+    work["_cnt"] = work.groupby("user_id")["user_id"].transform("size")
+    train_df = work[work["_ord"] < (work["_cnt"] - reserved_tail)].copy()
+
+    drop_cols = [c for c in ["_ord", "_cnt"] if c in train_df.columns]
+    train_df = train_df.drop(columns=drop_cols).reset_index(drop=True)
+    return train_df
+
+
+def load_t2rec_user_mapping(mapping_path: str) -> Dict[str, str]:
+    """
+    Load raw_user_id -> T2Rec user_idx(str) mapping.
+    T2Rec dataset uses user_idx string keys in inter.json; graph tokens should follow
+    the same key space so `self.graph_tokens.get(str(user_id))` can hit.
+    """
+    if not os.path.isfile(mapping_path):
+        print(f"⚠️ ID mapping not found at {mapping_path}; fallback to raw user_id keys.")
+        return {}
+
+    with open(mapping_path, "r", encoding="utf-8") as f:
+        mapping = json.load(f)
+
+    user_id_to_idx = mapping.get("user_id_to_idx", {})
+    if not isinstance(user_id_to_idx, dict) or len(user_id_to_idx) == 0:
+        print(f"⚠️ user_id_to_idx missing in {mapping_path}; fallback to raw user_id keys.")
+        return {}
+
+    return {str(raw_uid): str(uidx) for raw_uid, uidx in user_id_to_idx.items()}
+
+
 def build_sliding_windows(
     df: pd.DataFrame,
     window_len: int,
@@ -92,6 +132,7 @@ def build_sliding_windows(
         windows.append(w)
 
     return windows
+
 
 class SpatialGATEncoder(nn.Module):
     def __init__(self, num_users: int, num_items: int, hidden_dim: int, num_heads: int, dropout: float):
@@ -131,8 +172,8 @@ class SpatialGATEncoder(nn.Module):
         i_gid = g.nodes["item"].data["global_id"].to(torch.long)
 
         h0 = {
-            "user": self.user_emb(u_gid),  
-            "item": self.item_emb(i_gid),  
+            "user": self.user_emb(u_gid),
+            "item": self.item_emb(i_gid),
         }
 
         h = self.conv(g, h0)
@@ -141,29 +182,35 @@ class SpatialGATEncoder(nn.Module):
         h_item = h["item"].flatten(1)
 
         if CONCAT_ITEM_MEAN:
-            item_mean = h_item.mean(dim=0, keepdim=True)                 
-            item_expand = item_mean.repeat(h_user.size(0), 1)           
-            user_repr = torch.cat([h_user, item_expand], dim=1)          
+            item_mean = h_item.mean(dim=0, keepdim=True)
+            item_expand = item_mean.repeat(h_user.size(0), 1)
+            user_repr = torch.cat([h_user, item_expand], dim=1)
         else:
-            user_repr = h_user                                           
+            user_repr = h_user
 
         return user_repr
 
 
 if __name__ == "__main__":
-    df, user2idx, item2idx, idx2user, idx2item = load_data_and_mappings(DATA_PATH)
+    df_full, user2idx, item2idx, idx2user, idx2item = load_data_and_mappings(DATA_PATH)
+    df = build_train_interactions(df_full, reserved_tail=RESERVED_TAIL)
+    raw_to_t2rec_uid = load_t2rec_user_mapping(ID_MAPPING_PATH)
 
     mappings = {
         "user2idx": user2idx,
         "item2idx": item2idx,
         "idx2user": {str(k): v for k, v in idx2user.items()},
         "idx2item": {str(k): v for k, v in idx2item.items()},
-        "note": "Token dict keys use RAW user_id strings. Graph encoder uses global indices via node.data['global_id'].",
+        "raw_to_t2rec_user_idx": raw_to_t2rec_uid,
+        "token_user_key_space": "T2Rec user_idx string if id_mapping exists, otherwise raw user_id string",
+        "note": "Graph encoder uses global indices via node.data['global_id']. Saved token keys are aligned to T2Rec user ids when mapping is available.",
         "concat_item_mean": CONCAT_ITEM_MEAN,
         "hidden_dim": HIDDEN_DIM,
         "gat_heads": GAT_HEADS,
         "window_len": WINDOW_LEN,
         "stride": STRIDE,
+        "train_only": True,
+        "reserved_tail": RESERVED_TAIL,
     }
     with open(MAP_OUT, "w", encoding="utf-8") as f:
         json.dump(mappings, f, ensure_ascii=False, indent=2)
@@ -192,7 +239,7 @@ if __name__ == "__main__":
     zero_vec = torch.zeros(token_dim, dtype=torch.float32)
 
     user_seq: Dict[str, List[torch.Tensor]] = defaultdict(list)
-    last_win_idx: Dict[str, int] = {}  
+    last_win_idx: Dict[str, int] = {}
 
     with torch.no_grad():
         for win_id, win in enumerate(windows):
@@ -224,55 +271,49 @@ if __name__ == "__main__":
 
             for local_idx, u_gid in enumerate(u_global):
                 u_raw = str(idx2user[int(u_gid)])
+                u_key = raw_to_t2rec_uid.get(u_raw, u_raw)
                 emb = win_user_emb[local_idx].float()
 
-                if u_raw in last_win_idx:
-                    prev = last_win_idx[u_raw]
+                if u_key in last_win_idx:
+                    prev = last_win_idx[u_key]
                     gap = win_id - prev - 1
                     if gap > 0:
-                        user_seq[u_raw].extend([zero_vec.clone() for _ in range(gap)])
+                        user_seq[u_key].extend([zero_vec.clone() for _ in range(gap)])
                 else:
                     if win_id > 0:
-                        user_seq[u_raw].extend([zero_vec.clone() for _ in range(win_id)])
+                        user_seq[u_key].extend([zero_vec.clone() for _ in range(win_id)])
 
-                user_seq[u_raw].append(emb)
-                last_win_idx[u_raw] = win_id
+                user_seq[u_key].append(emb)
+                last_win_idx[u_key] = win_id
 
             print(f"✓ window {win_id} processed (users={len(u_global)}, items={len(i_global)})")
 
-    for u_raw, seq_list in user_seq.items():
+    for _, seq_list in user_seq.items():
         if len(seq_list) < num_windows:
             seq_list.extend([zero_vec.clone() for _ in range(num_windows - len(seq_list))])
 
-    all_users = df["user_id"].astype(str).unique().tolist()
-
-    if SAVE_SEQUENCE:
-        default_token = torch.stack([zero_vec.clone() for _ in range(num_windows)], dim=0)  # [T,D]
-    else:
-        default_token = zero_vec.clone()  # [D]
+    all_users_raw = df_full["user_id"].astype(str).unique().tolist()
+    all_users = [raw_to_t2rec_uid.get(u_raw, u_raw) for u_raw in all_users_raw]
 
     num_missing = 0
-    for u in all_users:
-        if u not in user_seq or len(user_seq[u]) == 0:
+    for u_key in all_users:
+        if u_key not in user_seq or len(user_seq[u_key]) == 0:
             num_missing += 1
-            if SAVE_SEQUENCE:
-                user_seq[u] = [zero_vec.clone() for _ in range(num_windows)]
-            else:
-                user_seq[u] = [zero_vec.clone() for _ in range(num_windows)]
+            user_seq[u_key] = [zero_vec.clone() for _ in range(num_windows)]
 
     print(f"✅ Filled missing users for graph tokens: {num_missing} users were absent and set to zero.")
     print(f"✅ Now user_seq users={len(user_seq)} (should match train users={len(all_users)})")
 
     user_graph_tokens: Dict[str, torch.Tensor] = {}
-    for u_raw, seq_list in user_seq.items():
+    for u_key, seq_list in user_seq.items():
         if len(seq_list) == 0:
             continue
-        seq = torch.stack(seq_list, dim=0) 
+        seq = torch.stack(seq_list, dim=0)
         if SAVE_SEQUENCE:
-            user_graph_tokens[u_raw] = seq
+            user_graph_tokens[u_key] = seq
         else:
             if AGGREGATE_IF_NOT_SEQUENCE == "mean":
-                user_graph_tokens[u_raw] = seq.mean(dim=0)
+                user_graph_tokens[u_key] = seq.mean(dim=0)
             else:
                 raise ValueError("Unsupported aggregate mode")
 

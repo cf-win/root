@@ -19,11 +19,10 @@ python test_t2rec.py \
     --behavior_token_path $BEHAVIOR_TOKEN_PATH \
     --results_file $RESULTS_FILE \
     --task simple_rec \
-    --test_batch_size 4 \
-    --num_beams 2 \
+    --test_batch_size 2 \
+    --num_beams 10 \
     --index_file .index.json \
     --max_his_len 20 \
-    --top_k 10 \
     --sample_num -1 \
     --auto_risk_threshold \
     --threshold_min 0.1 \

@@ -30,7 +30,6 @@ def parse_dataset_args(parser):
     parser.add_argument("--behavior_token_path", type=str, default="")
     parser.add_argument("--task", type=str, default="rec_train",
                         help="rec_train, simple_rec, deep_rec (train always uses rec_train)")
-    parser.add_argument("--top_k", type=int, default=10)
     parser.add_argument("--use_title", action="store_true", default=False)
     return parser
 
@@ -138,53 +137,54 @@ def load_json(file):
 
 def compute_metrics(predictions, targets, anomaly_preds, anomaly_labels, metrics_str):
     """
-    改动点：targets 允许是 list[str]（多目标）
-    - hit@k: 预测 top-k 中命中任意一个 target 即算命中
-    - ndcg@k: 多目标 NDCG（DCG 按命中位置累加，IDCG 为最优命中的归一化项）
+    Leave-one-out 推荐评估（每个用户仅 1 个真实目标）
+    - Hit@k: top-k 推荐中是否包含目标物品
+    - NDCG@k: 单目标下 IDCG=1.0，因此 NDCG@k = DCG@k
+      即命中时 1/log2(rank+1)，未命中为 0
     """
     fixed_preds = []
     for p in predictions:
         if isinstance(p, (list, tuple)):
             fixed_preds.append(list(p))
         else:
-            fixed_preds.append([])  # 解析失败就当空推荐
+            fixed_preds.append([])
     predictions = fixed_preds
+
+    def to_single_target(t):
+        if isinstance(t, (list, tuple)):
+            return str(t[0]) if len(t) > 0 else None
+        if isinstance(t, set):
+            if len(t) == 0:
+                return None
+            return str(next(iter(t)))
+        if t is None:
+            return None
+        return str(t)
+
+    single_targets = [to_single_target(t) for t in targets]
 
     metrics = metrics_str.split(",")
     results = {}
+    n = min(len(predictions), len(single_targets))
 
     for metric in metrics:
+        metric = metric.strip()
         if metric.startswith("hit@"):
             k = int(metric.split("@")[1])
             hits = 0
-            for pred, target in zip(predictions, targets):
-                if isinstance(target, (list, tuple, set)):
-                    tgt_set = set(target)
-                    hits += 1 if any(x in tgt_set for x in pred[:k]) else 0
-                else:
-                    hits += 1 if target in pred[:k] else 0
-            results[metric] = hits / len(predictions) if len(predictions) > 0 else 0.0
+            for pred, target in zip(predictions[:n], single_targets[:n]):
+                if target is not None and target in pred[:k]:
+                    hits += 1
+            results[metric] = hits / n if n > 0 else 0.0
 
         elif metric.startswith("ndcg@"):
             k = int(metric.split("@")[1])
             ndcg_sum = 0.0
-            for pred, target in zip(predictions, targets):
-                if isinstance(target, (list, tuple, set)):
-                    tgt_set = set(target)
-                    dcg = 0.0
-                    for i, x in enumerate(pred[:k], start=1):
-                        if x in tgt_set:
-                            dcg += 1.0 / np.log2(i + 1)
-                    ideal_len = min(k, len(tgt_set))
-                    idcg = sum(1.0 / np.log2(i + 1) for i in range(1, ideal_len + 1))
-                    ndcg = (dcg / idcg) if idcg > 0 else 0.0
-                    ndcg_sum += ndcg
-                else:
-                    # 单目标兼容旧逻辑
-                    if target in pred[:k]:
-                        rank = pred[:k].index(target) + 1
-                        ndcg_sum += 1 / np.log2(rank + 1)
-            results[metric] = ndcg_sum / len(predictions) if len(predictions) > 0 else 0.0
+            for pred, target in zip(predictions[:n], single_targets[:n]):
+                if target is not None and target in pred[:k]:
+                    rank = pred[:k].index(target) + 1
+                    ndcg_sum += 1.0 / np.log2(rank + 1)
+            results[metric] = ndcg_sum / n if n > 0 else 0.0
 
     if len(anomaly_preds) > 0 and len(anomaly_labels) > 0:
         correct = sum([1 for p, l in zip(anomaly_preds, anomaly_labels) if p == l])
@@ -200,3 +200,4 @@ def compute_metrics(predictions, targets, anomaly_preds, anomaly_labels, metrics
         results["anomaly_f1"] = f1
 
     return results
+

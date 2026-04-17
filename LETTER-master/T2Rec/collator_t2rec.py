@@ -42,6 +42,8 @@ class T2RecCollator(object):
         graph_tokens = torch.stack([d["graph_token"] for d in batch], dim=0)
         behavior_tokens = torch.stack([d["behavior_token"] for d in batch], dim=0)
         risk_labels = torch.tensor([d.get("risk_label", 0.0) for d in batch], dtype=torch.float)
+        risk_labels = torch.where(risk_labels < 0.0, torch.zeros_like(risk_labels), risk_labels)
+        risk_loss_masks = torch.tensor([d.get("risk_loss_mask", False) for d in batch], dtype=torch.float)
 
         #每条样本的推荐item与是否真实mask（补齐部分不算loss）
         rec_items_list = [d.get("rec_items", None) for d in batch]
@@ -97,6 +99,7 @@ class T2RecCollator(object):
         inputs["graph_tokens"] = graph_tokens.float()
         inputs["behavior_tokens"] = behavior_tokens.float()
         inputs["risk_labels"] = risk_labels
+        inputs["risk_loss_mask"] = risk_loss_masks
         return inputs
 
 
@@ -120,6 +123,8 @@ class T2RecTestCollator(object):
         behavior_tokens = torch.stack([d["behavior_token"] for d in batch], dim=0)
         user_ids = [d["user_id"] for d in batch]
         anomaly_labels = [d["anomaly_label"] for d in batch]
+        user_types = [d.get("user_type", "unlabel") for d in batch]
+        det_test_flags = [d.get("det_test_flag", False) for d in batch]
 
         return {
             "input_texts": input_texts,
@@ -130,4 +135,6 @@ class T2RecTestCollator(object):
             "behavior_tokens": behavior_tokens.float(),
             "user_ids": user_ids,
             "anomaly_labels": anomaly_labels,
+            "user_types": user_types,
+            "det_test_flags": det_test_flags,
         }
