@@ -1,18 +1,28 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
 export WANDB_MODE=disabled
-export CUDA_VISIBLE_DEVICES=0
-export NCCL_P2P_DISABLE=1
-export NCCL_IB_DISABLE=1
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1}"
+export NCCL_P2P_DISABLE="${NCCL_P2P_DISABLE:-1}"
+export NCCL_IB_DISABLE="${NCCL_IB_DISABLE:-1}"
+# Keep HF/DeepSpeed checkpoint loading behavior compatible with PyTorch>=2.6.
+export TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD="${TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD:-1}"
+NPROC_PER_NODE="${NPROC_PER_NODE:-2}"
+MASTER_PORT="${MASTER_PORT:-29500}"
 
 DATASET=Beauty_5
 # 使用 1.5B 模型快速验证
 BASE_MODEL=/root/autodl-tmp/Qwen/Qwen2.5-1.5B-Instruct
 # 数据路径指向标准格式的数据目录
 DATA_PATH=/root/autodl-tmp/
-OUTPUT_DIR=/root/autodl-tmp/ckpt/$DATASET/
+OUTPUT_DIR="${OUTPUT_DIR:-/root/autodl-tmp/ckpt/$DATASET/}"
 GRAPH_TOKEN_PATH=/root/autodl-tmp/token/graph_token/${DATASET}_graph_tokens.pt
 BEHAVIOR_TOKEN_PATH=/root/autodl-tmp/token/behavior_token/${DATASET}_behavior_tokens.pt
 
-torchrun --nproc_per_node=1 train_t2rec.py \
+EPOCHS="${EPOCHS:-10}"
+TRAIN_DATA_SAMPLE_NUM="${TRAIN_DATA_SAMPLE_NUM:-0}"
+
+torchrun --nproc_per_node="${NPROC_PER_NODE}" --master_port="${MASTER_PORT}" train_t2rec.py \
     --base_model $BASE_MODEL \
     --output_dir $OUTPUT_DIR \
     --dataset $DATASET \
@@ -22,15 +32,16 @@ torchrun --nproc_per_node=1 train_t2rec.py \
     --per_device_batch_size 4 \
     --gradient_accumulation_steps 8 \
     --learning_rate 1e-4 \
-    --epochs 1 \
+    --epochs "${EPOCHS}" \
     --logging_step 10 \
     --task rec_train \
+    --only_train_response \
     --train_prompt_sample_num 1 \
-    --train_data_sample_num 0 \
+    --train_data_sample_num "${TRAIN_DATA_SAMPLE_NUM}" \
     --index_file .index.json \
     --temperature 1.0 \
     --lambda_anomaly 0.0 \
-    --lambda_risk 2.0 \
+    --lambda_risk 1.0 \
     --probe_dim 64 \
     --max_his_len 20 \
     --lora_r 16 \

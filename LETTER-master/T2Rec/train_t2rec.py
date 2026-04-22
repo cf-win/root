@@ -113,14 +113,26 @@ def train(args):
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
     train_data, valid_data = load_datasets(args)
-    pos_num = sum(1 for d in train_data.inter_data if d.get("anomaly_label", "No") == "Yes")
-    neg_num = len(train_data.inter_data) - pos_num
-    risk_pos_weight = (neg_num / pos_num) if pos_num > 0 else None
+    risk_supervised_samples = [
+        d for d in train_data.inter_data
+        if bool(d.get("risk_loss_mask", False)) and d.get("risk_label", -1) in (0, 1)
+    ]
+    pos_num = sum(1 for d in risk_supervised_samples if d.get("risk_label", -1) == 1)
+    neg_num = sum(1 for d in risk_supervised_samples if d.get("risk_label", -1) == 0)
+    risk_pos_weight = (neg_num / pos_num) if pos_num > 0 and neg_num > 0 else None
     new_tokens = train_data.get_new_tokens()
     add_num = tokenizer.add_tokens(new_tokens)
     if local_rank == 0:
         print("add {} new tokens.".format(add_num))
         print("data num:", len(train_data))
+        print(
+            "risk supervised samples:",
+            len(risk_supervised_samples),
+            "risk_pos:",
+            pos_num,
+            "risk_neg:",
+            neg_num,
+        )
         tokenizer.save_pretrained(args.output_dir)
     graph_dim = train_data.graph_dim
     behavior_dim = train_data.behavior_dim
